@@ -1,0 +1,30 @@
+#!/bin/sh
+
+module="dcsc"
+device="dcsc"
+mode="664"
+minors=16
+
+# Group: since distributions do it differently, look for wheel or use staff
+if grep '^staff:' /etc/group > /dev/null; then
+	group="staff"
+else
+	group="wheel"
+fi
+
+# invoke insmod with all arguments we got
+# and use a pathname, as newer modutils don't look in . by default
+/sbin/insmod -f ./$module.ko $* || exit 1
+
+major=`cat /proc/devices | awk "\\$2==\"$module\" {print \\$1}"`
+
+# Remove stale nodes and replace them, then give gid and perms
+
+rm -f /dev/${device}a* /dev/${device}
+
+echo mknod /dev/${device}a b $major 0
+mknod /dev/${device}a b $major 0
+#make_minors /dev/${device}a 0
+ln -sf ${device}a /dev/${device}
+chgrp $group /dev/${device}a*
+chmod $mode  /dev/${device}a*
