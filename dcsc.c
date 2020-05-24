@@ -310,6 +310,7 @@ out_kfree:
 
 
 
+#if 0
 static struct pci_device_id ids[] = {
 	{PCI_DEVICE(PCI_VENDOR_ID_MATROX, PCI_DEVICE_ID_MATROX_VIA), },
 	{0, },
@@ -337,6 +338,7 @@ static struct pci_driver pcidrv = {
 	.probe = pcidrv_probe,
 	.remove = pcidrv_remove,
 };
+#endif
 
 
 
@@ -346,13 +348,14 @@ static int __init dcsc_init(void)
 {
 	size_t i;
 	int res;
+	((void)res);
 	printk(KERN_ALERT "dcsc: Initialize the module\xa");
 
-	printk(KERN_ALERT "dcsc: register the pci driver:\xa");
-	if ((res = pci_register_driver(&pcidrv)))
-	{
-		printk(KERN_ALERT "dcsc: register the pci driver failed with code \"%d\"\xa", res);
-	}
+//	printk(KERN_ALERT "dcsc: register the pci driver:\xa");
+//	if ((res = pci_register_driver(&pcidrv)))
+//	{
+//		printk(KERN_ALERT "dcsc: register the pci driver failed with code \"%d\"\xa", res);
+//	}
 
 	/*
 	 * Get registered.
@@ -397,8 +400,8 @@ static void __exit dcsc_exit(void)
 {
 	size_t i;
 	printk(KERN_ALERT "dcsc: Finitialize the module\xa");
-	printk(KERN_ALERT "dcsc: unregister pci driver\xa");
-	pci_unregister_driver(&pcidrv);
+//	printk(KERN_ALERT "dcsc: unregister pci driver\xa");
+//	pci_unregister_driver(&pcidrv);
 
 	for (i = 0; i < ndevices; i++) {
 		struct dcsc_dev *dev = Devices + i;
