@@ -16,6 +16,7 @@
 #include <linux/blkdev.h>
 #include <linux/buffer_head.h>
 #include <linux/bio.h>
+#include <linux/pci.h>
 
 MODULE_LICENSE("GPL");
 
@@ -309,10 +310,49 @@ out_kfree:
 
 
 
+static struct pci_device_id ids[] = {
+	{PCI_DEVICE(PCI_VENDOR_ID_MATROX, PCI_DEVICE_ID_MATROX_VIA), },
+	{0, },
+};
+MODULE_DEVICE_TABLE(pci, ids);
+
+static int pcidrv_probe(
+	struct pci_dev *dev,
+	const struct pci_device_id *id
+	)
+{
+	return pci_enable_device(dev);
+}
+
+static void pcidrv_remove(
+	struct pci_dev *dev
+	)
+{
+	return;
+};
+
+static struct pci_driver pcidrv = {
+	.name = "dcsc_pcidrv",
+	.id_table = ids,
+	.probe = pcidrv_probe,
+	.remove = pcidrv_remove,
+};
+
+
+
+
+
 static int __init dcsc_init(void)
 {
 	size_t i;
+	int res;
 	printk(KERN_ALERT "dcsc: Initialize the module\xa");
+
+	printk(KERN_ALERT "dcsc: register the pci driver:\xa");
+	if ((res = pci_register_driver(&pcidrv)))
+	{
+		printk(KERN_ALERT "dcsc: register the pci driver failed with code \"%d\"\xa", res);
+	}
 
 	/*
 	 * Get registered.
@@ -357,6 +397,8 @@ static void __exit dcsc_exit(void)
 {
 	size_t i;
 	printk(KERN_ALERT "dcsc: Finitialize the module\xa");
+	printk(KERN_ALERT "dcsc: unregister pci driver\xa");
+	pci_unregister_driver(&pcidrv);
 
 	for (i = 0; i < ndevices; i++) {
 		struct dcsc_dev *dev = Devices + i;
