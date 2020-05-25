@@ -25,18 +25,30 @@ MODULE_LICENSE("Dual BSD/GPL");
 #define MAXDEVICES 16
 #define KERNEL_SECTOR_SIZE 512
 
-static int dcsc_major = 0;
-static int default_size = 128 * 1024 * 1024; // twelvety-eight MiB
+#if 1
+#define MARKENTER(f) printk(KERN_DEBUG "dcsc: enter " #f "\xa");
+#define MARKLEAVE(f) printk(KERN_DEBUG "dcsc: leave " #f "\xa");
+#else
+#define MARKENTER(f)
+#define MARKLEAVE(f)
+#endif
 
+static int dcsc_major = 0; // allocate major number at runtime
+static int default_size = 128 * 1024 * 1024; // twelvety-eight MiB in bytes
+
+// Chooses between requiring user to create all devices or creating one default
+// device at startup
 static int interactive_creation_allowed = 0;
 module_param(interactive_creation_allowed, int, 0);
 
+// Only needed for sysfs manipulations
 struct testbus_driver {
 	char *name;
 	struct driver_attribute createnewdevice_attr;
 	struct device_driver driver;
 } dcsc_driver = {"dcsc_driver"};
 
+// Main device 'descriptor', contains all needed info
 struct dcsc_dev {
 	char *name;
 	int access_mode;             /* 0 for read-write, other for read-only */
@@ -53,6 +65,7 @@ struct dcsc_dev {
 	struct device dev;
 };
 
+// An array of managed devices
 static struct {
 	size_t n_devices;
 	size_t cap_devices;
@@ -61,6 +74,7 @@ static struct {
 
 
 
+// Forward-declarations for including in structures and functions
 static int setup_device(
 	struct dcsc_dev *dev,
 	int which,
@@ -79,6 +93,10 @@ void testbus_release(
 	struct device *dev
 );
 
+/*
+ * I have created a bus of my own since i couldn't find a method to create a
+ * virtual device on a real bus like pci or usb.
+ */
 static struct device testbus = {
 	.init_name   = "testbus",
 	.release  = testbus_release
@@ -97,6 +115,13 @@ static struct bus_type testbus_type = {
 
 
 
+/*
+ * Functions for request management and data transfers
+ */
+
+
+
+// Transfer a single bvec
 static int dcsc_xfer_bvec(
 	struct dcsc_dev *dev,
 	struct bio_vec *bvec,
@@ -109,6 +134,8 @@ static int dcsc_xfer_bvec(
 
 	char *inmem = buffer + bvec->bv_offset;
 	char *indsk = dev->data + offset;
+
+	MARKENTER(dcsc_xfer_bvec);
 
 	if (bvec->bv_len % KERNEL_SECTOR_SIZE)
 		printk(KERN_WARNING "%s: "
@@ -127,15 +154,13 @@ static int dcsc_xfer_bvec(
 		memcpy(inmem, indsk, len);
 
 	kunmap_atomic(buffer);
+
 	return 0;
 }
 
 
 
-/*
- * Transfer a full request.
- */
-
+// Transfer a full request.
 static void dcsc_xfer_request(
 	struct dcsc_dev *dev,
 	struct request *req
@@ -143,6 +168,8 @@ static void dcsc_xfer_request(
 {
 	struct bio_vec *bvec;
 	struct req_iterator iter;
+
+	MARKENTER(dcsc_xfer_request);
 
 	// Kernel code suggests using `rq_for_each_segment` instead, but how am
 	// i to get the `cur_sector` that way?
@@ -158,9 +185,7 @@ static void dcsc_xfer_request(
 
 
 
-/*
- * Callback for serving queued requests
- */
+// Callback for serving queued requests
 static void dcsc_request(
 	struct request_queue *q
 	)
@@ -168,6 +193,8 @@ static void dcsc_request(
 	struct request *req;
 	struct dcsc_dev *dev = q->queuedata;
 	int ret;
+
+	MARKENTER(dcsc_request);
 
 	req = blk_fetch_request(q);
 	while (req) {
@@ -194,10 +221,17 @@ done:
 
 
 
+/*
+ * Bus, device and driver management in sysfs. Adds required attributes
+ */
+
+
+
 void testbus_release(
 	struct device *dev
 	)
 {
+	MARKENTER(testbus_release);
 	return;
 }
 
@@ -205,8 +239,12 @@ void testbus_dev_release(
 	struct device *dev
 	)
 {
+	MARKENTER(testbus_dev_release);
 	return;
 }
+
+// 'Size' attribute allows user to shrink/grow device size, yet does nothing to
+// reduce memory usage
 
 ssize_t show_size_attr(
 	struct device *plaindev,
@@ -215,6 +253,7 @@ ssize_t show_size_attr(
 	)
 {
 	struct dcsc_dev *dev = container_of(plaindev, struct dcsc_dev, dev);
+	MARKENTER(show_size_attr);
 	return snprintf(buf, PAGE_SIZE, "%lu\xa", dev->size);
 }
 
@@ -228,6 +267,8 @@ ssize_t store_size_attr(
 	struct dcsc_dev *dev = container_of(plaindev, struct dcsc_dev, dev);
 	size_t size = 0;
 	size_t i;
+
+	MARKENTER(store_size_attr);
 
 	for (i = 0;  i < count;  i++)
 	{
@@ -248,6 +289,8 @@ ssize_t store_size_attr(
 	return 0;
 }
 
+// 'Access' attribute allows user to change access mode for the device
+
 ssize_t show_access_attr(
 	struct device *plaindev,
 	struct device_attribute *attr,
@@ -255,6 +298,7 @@ ssize_t show_access_attr(
 	)
 {
 	struct dcsc_dev *dev = container_of(plaindev, struct dcsc_dev, dev);
+	MARKENTER(show_access_attr);
 	return snprintf(buf, PAGE_SIZE, "%d\xa", !!dev->access_mode);
 }
 
@@ -266,6 +310,7 @@ ssize_t store_access_attr(
 	)
 {
 	struct dcsc_dev *dev = container_of(plaindev, struct dcsc_dev, dev);
+	MARKENTER(store_access_attr);
 
 	if (count < 1)
 		return -EINVAL;
@@ -276,12 +321,15 @@ ssize_t store_access_attr(
 	return 0;
 }
 
+// Registration of a device in sysfs for creating attributes
 
 int register_testbus_device(
 	struct dcsc_dev *dev
 	)
 {
 	int res;
+
+	MARKENTER(register_testbus_device);
 
 	dev->dev.bus = &testbus_type;
 	dev->dev.parent = &testbus;
@@ -317,14 +365,19 @@ void unregister_testbus_device(
 	struct dcsc_dev *dev
 	)
 {
+	MARKENTER(unregister_testbus_device);
 	device_unregister(&dev->dev);
 }
+
+// Attribute 'createnewdevice' allows user, if the flag was checked at module's
+// load time, to create new devices of specified sizes.
 
 static ssize_t show_createnewdevice_attr(
 	struct device_driver *driver,
 	char *buf
 	)
 {
+	MARKENTER(show_createnewdevice_attr);
 	return snprintf(buf, PAGE_SIZE, "Specify a device name and size in KiB, e.g. \"dcscb 12*1024\"\xa");
 }
 
@@ -341,6 +394,8 @@ static ssize_t store_createnewdevice_attr(
 	size_t sizelen;
 	size_t size;
 	size_t multiplier;
+
+	MARKENTER(store_createnewdevice_attr);
 
 	// check format for being "[[:alnum:]]+\x20[0-9*\x20]+"
 	namestart = buf;
@@ -404,11 +459,15 @@ static ssize_t store_createnewdevice_attr(
 
 
 
+// Registration of the driver in sysfs for creating attributes
+
 int register_testbus_driver(
 	struct testbus_driver *driver
 	)
 {
 	int ret;
+
+	MARKENTER(register_testbus_driver);
 
 	driver->driver.name = driver->name;
 	driver->driver.bus = &testbus_type;
@@ -436,6 +495,7 @@ void unregister_testbus_driver(
 	struct testbus_driver *driver
 	)
 {
+	MARKENTER(unregister_testbus_driver);
 	driver_unregister(&driver->driver);
 }
 
@@ -449,7 +509,7 @@ void unregister_testbus_driver(
 
 
 /*
- * Open and close.
+ * Open and close. Both don't do much useful, but are required by the API.
  */
 
 static int dcsc_open(
@@ -457,6 +517,7 @@ static int dcsc_open(
 	fmode_t mode
 	)
 {
+	MARKENTER(dcsc_open);
 	return 0;
 }
 
@@ -467,6 +528,7 @@ static void dcsc_release(
 	fmode_t mode
 	)
 {
+	MARKENTER(dcsc_release);
 	return;
 }
 
@@ -490,6 +552,7 @@ int dcsc_ioctl(
 	unsigned long arg
 	)
 {
+	MARKENTER(dcsc_ioctl);
 	switch(cmd) {
 	case HDIO_GETGEO:
 	{
@@ -515,6 +578,11 @@ int dcsc_ioctl(
 	return -ENOTTY;
 }
 
+/*
+ * At this point, everything needed for the setup of this structure has been
+ * defined.
+ */
+
 static struct block_device_operations dcsc_ops = {
 	.owner           = THIS_MODULE,
 	.open            = dcsc_open,
@@ -532,7 +600,8 @@ static struct block_device_operations dcsc_ops = {
 
 
 /*
- * Set up our internal device.
+ * Setup function, does some sanity checks and then creates a device. May fail,
+ * check return value.
  */
 
 static int setup_device(
@@ -544,6 +613,8 @@ static int setup_device(
 	)
 {
 	int res;
+
+	MARKENTER(setup_device);
 
 	if (which >= Devices.cap_devices)
 		return -EBADSLT;
@@ -623,6 +694,8 @@ static int setup_device(
 	return 0;
 }
 
+/* A wrapper for a setup function, appends a new device */
+
 int new_device(
 	char const *name,
 	size_t name_len,
@@ -630,6 +703,7 @@ int new_device(
 	)
 {
 	int res;
+	MARKENTER(new_device);
 	res = setup_device(Devices.Devices + Devices.n_devices,
 	                   Devices.n_devices,
 	                   name,
@@ -651,9 +725,17 @@ int new_device(
 
 
 
+/*
+ * Initialiaztion and finitialization functions
+ */
+
+
+
 static int __init dcsc_init(void)
 {
 	int res;
+
+	MARKENTER(dcsc_init);
 
 	printk(KERN_NOTICE "dcsc: Initialize the module\xa");
 
@@ -726,6 +808,7 @@ static int __init dcsc_init(void)
 static void __exit dcsc_exit(void)
 {
 	size_t i;
+	MARKENTER(dcsc_exit);
 	printk(KERN_NOTICE "dcsc: Finitialize the module\xa");
 
 	for (i = 0;  i < Devices.n_devices;  i++) {
