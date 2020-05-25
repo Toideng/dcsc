@@ -22,12 +22,11 @@
 MODULE_LICENSE("Dual BSD/GPL");
 
 #define DCSC_MINORS 16
+#define MAXDEVICES 16
 #define KERNEL_SECTOR_SIZE 512
 
 static int dcsc_major = 0;
 static int default_size = 128 * 1024 * 1024; // twelvety-eight MiB
-static int ndevices = 1;
-static int maxdevices = 16;
 
 static int interactive_creation_allowed = 0;
 module_param(interactive_creation_allowed, int, 0);
@@ -58,23 +57,7 @@ static struct {
 	size_t n_devices;
 	size_t cap_devices;
 	struct dcsc_dev *Devices;
-} Devices = {0, maxdevices, NULL};
-
-static struct device testbus = {
-	.init_name   = "testbus",
-	.release  = testbus_release
-};
-
-static struct bus_type testbus_type = {
-	.name = "testbus",
-};
-
-static struct block_device_operations dcsc_ops = {
-	.owner           = THIS_MODULE,
-	.open            = dcsc_open,
-	.release         = dcsc_release,
-	.ioctl           = dcsc_ioctl,
-};
+} Devices = {0, MAXDEVICES, NULL};
 
 
 
@@ -85,27 +68,102 @@ static struct block_device_operations dcsc_ops = {
 
 
 
-int new_device(
-	char *name,
-	size_t name_len,
-	size_t device_size
-	)
+static int dcsc_xfer_bvec(
+	struct dcsc_dev *dev,
+	struct bio_vec *bvec,
+	size_t data_dir,
+	sector_t cur_sector)
 {
-	int res;
-	if (Devices.n_devices == Devices.cap_devices)
-		return -ENOMEM;
+	char *buffer = kmap_atomic(bvec->bv_page);
+	size_t offset = cur_sector * KERNEL_SECTOR_SIZE;
+	size_t len = (bvec->bv_len / KERNEL_SECTOR_SIZE) * KERNEL_SECTOR_SIZE;
 
-	res = setup_device(Devices.Devices[Devices.n_devices],
-	                   Devices.n_devices,
-	                   name,
-	                   name_len,
-	                   device_size);
-	if (res)
-		return res;
+	char *inmem = buffer + bvec->bv_offset;
+	char *indsk = dev->data + offset;
 
-	Devices.n_devices++;
+	if (bvec->bv_len % KERNEL_SECTOR_SIZE)
+		printk(KERN_WARNING "%s: "
+		       "kernel has requested transfer of a non-integer # of sectors.\xa",
+		       dev->name);
+
+	if ((offset + len) > dev->size) {
+		printk(KERN_WARNING "Beyond-end write (0x%016lx+0x%016lx)\n",
+		       offset, len);
+		return -EFAULT;
+	}
+
+	if (data_dir == WRITE)
+		memcpy(indsk, inmem, len);
+	else
+		memcpy(inmem, indsk, len);
+
+	kunmap_atomic(buffer);
 	return 0;
 }
+
+
+
+/*
+ * Transfer a full request.
+ */
+
+static void dcsc_xfer_request(
+	struct dcsc_dev *dev,
+	struct request *req
+	)
+{
+	struct bio_vec *bvec;
+	struct req_iterator iter;
+
+	// Kernel code suggests using `rq_for_each_segment` instead, but how am
+	// i to get the `cur_sector` that way?
+	__rq_for_each_bio(iter.bio, req) {
+		sector_t cur_sector = iter.bio->bi_sector;
+		bio_for_each_segment(bvec, iter.bio, iter.i) {
+			dcsc_xfer_bvec(dev, bvec, bio_data_dir(iter.bio), cur_sector);
+			cur_sector += bvec->bv_len / KERNEL_SECTOR_SIZE;
+		}
+	}
+	return;
+}
+
+
+
+/*
+ * Callback for serving queued requests
+ */
+static void dcsc_request(
+	struct request_queue *q
+	)
+{
+	struct request *req;
+	struct dcsc_dev *dev = q->queuedata;
+	int ret;
+
+	req = blk_fetch_request(q);
+	while (req) {
+		if (req->cmd_type != REQ_TYPE_FS) {
+			printk (KERN_NOTICE "Skip non-fs request\xa");
+			ret = -EIO;
+			goto done;
+		}
+		dcsc_xfer_request(dev, req);
+		ret = 0;
+done:
+		if(!__blk_end_request_cur(req, ret)){
+			req = blk_fetch_request(q);
+		}
+	}
+}
+
+
+
+
+
+
+
+
+
 
 /*
  * Set up our internal device.
@@ -124,9 +182,9 @@ static int setup_device(
 	if (which >= Devices.cap_devices)
 		return -EBADSLT;
 
-	if (size % KERNEL_SECTOR_SIZE)
+	if (device_size % KERNEL_SECTOR_SIZE)
 		return -EINVAL;
-	size /= KERNEL_SECTOR_SIZE;
+	device_size /= KERNEL_SECTOR_SIZE;
 
 	if (name_len >= 32)
 		return -EOVERFLOW;
@@ -179,10 +237,10 @@ static int setup_device(
 	dev->gd->queue = dev->queue;
 	dev->gd->private_data = dev;
 
-	snprintf(dev->gd->disk_name, MIN(32, name_len), "%s", name);
+	snprintf(dev->gd->disk_name, ((32 < name_len) ? 32 : name_len), "%s", name);
 	dev->name = dev->gd->disk_name;
 
-	set_capacity(dev->gd, nsectors);
+	set_capacity(dev->gd, device_size);
 	add_disk(dev->gd);
 
 	res = register_testbus_device(dev);
@@ -196,6 +254,28 @@ static int setup_device(
 		return res;
 	}
 
+	return 0;
+}
+
+int new_device(
+	char *name,
+	size_t name_len,
+	size_t device_size
+	)
+{
+	int res;
+	if (Devices.n_devices == Devices.cap_devices)
+		return -ENOMEM;
+
+	res = setup_device(Devices.Devices[Devices.n_devices],
+	                   Devices.n_devices,
+	                   name,
+	                   name_len,
+	                   device_size);
+	if (res)
+		return res;
+
+	Devices.n_devices++;
 	return 0;
 }
 
@@ -454,102 +534,14 @@ void unregister_testbus_driver(
 	driver_unregister(&driver->driver);
 }
 
+static struct device testbus = {
+	.init_name   = "testbus",
+	.release  = testbus_release
+};
 
-
-
-
-
-
-
-
-
-static int dcsc_xfer_bvec(
-	struct dcsc_dev *dev,
-	struct bio_vec *bvec,
-	size_t data_dir,
-	sector_t cur_sector)
-{
-	char *buffer = kmap_atomic(bvec->bv_page);
-	size_t offset = cur_sector * KERNEL_SECTOR_SIZE;
-	size_t len = (bvec->bv_len / KERNEL_SECTOR_SIZE) * KERNEL_SECTOR_SIZE;
-
-	char *inmem = buffer + bvec->bv_offset;
-	char *indsk = dev->data + offset;
-
-	if (bvec->bv_len % KERNEL_SECTOR_SIZE)
-		printk(KERN_WARNING "%s: "
-		       "kernel has requested transfer of a non-integer # of sectors.\xa",
-		       dev->name);
-
-	if ((offset + len) > dev->size) {
-		printk(KERN_WARNING "Beyond-end write (0x%016lx+0x%016lx)\n",
-		       offset, len);
-		return -EFAULT;
-	}
-
-	if (data_dir == WRITE)
-		memcpy(indsk, inmem, len);
-	else
-		memcpy(inmem, indsk, len);
-
-	kunmap_atomic(buffer);
-	return 0;
-}
-
-
-
-/*
- * Transfer a full request.
- */
-
-static void dcsc_xfer_request(
-	struct dcsc_dev *dev,
-	struct request *req
-	)
-{
-	struct bio_vec *bvec;
-	struct req_iterator iter;
-
-	// Kernel code suggests using `rq_for_each_segment` instead, but how am
-	// i to get the `cur_sector` that way?
-	__rq_for_each_bio(iter.bio, req) {
-		sector_t cur_sector = iter.bio->bi_sector;
-		bio_for_each_segment(bvec, iter.bio, iter.i) {
-			dcsc_xfer_bvec(dev, bvec, bio_data_dir(iter.bio), cur_sector);
-			cur_sector += bvec->bv_len / KERNEL_SECTOR_SIZE;
-		}
-	}
-	return;
-}
-
-
-
-/*
- * Callback for serving queued requests
- */
-static void dcsc_request(
-	struct request_queue *q
-	)
-{
-	struct request *req;
-	struct dcsc_dev *dev = q->queuedata;
-	int ret;
-
-	req = blk_fetch_request(q);
-	while (req) {
-		if (req->cmd_type != REQ_TYPE_FS) {
-			printk (KERN_NOTICE "Skip non-fs request\xa");
-			ret = -EIO;
-			goto done;
-		}
-		dcsc_xfer_request(dev, req);
-		ret = 0;
-done:
-		if(!__blk_end_request_cur(req, ret)){
-			req = blk_fetch_request(q);
-		}
-	}
-}
+static struct bus_type testbus_type = {
+	.name = "testbus",
+};
 
 
 
@@ -626,6 +618,13 @@ int dcsc_ioctl(
 
 	return -ENOTTY;
 }
+
+static struct block_device_operations dcsc_ops = {
+	.owner           = THIS_MODULE,
+	.open            = dcsc_open,
+	.release         = dcsc_release,
+	.ioctl           = dcsc_ioctl,
+};
 
 
 
@@ -738,7 +737,7 @@ static void __exit dcsc_exit(void)
 	unregister_testbus_driver(&dcsc_driver);
 	device_unregister(&testbus);
 	bus_unregister(&testbus_type);
-	kfree(Devices);
+	kfree(Devices.Devices);
 
 	printk(KERN_NOTICE "dcsc: Finitialize complete\xa");
 }

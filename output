@@ -1,0 +1,58 @@
+make -C /usr/src/kernels/`uname -r` M=/root/dcsc modules
+make[1]: Entering directory `/usr/src/kernels/3.10.0-1127.8.2.el7.x86_64'
+  CC [M]  /root/dcsc/dcsc.o
+/root/dcsc/dcsc.c: In function ‘setup_device’:
+/root/dcsc/dcsc.c:236:19: error: ‘dcsc_ops’ undeclared (first use in this function)
+  dev->gd->fops = &dcsc_ops;
+                   ^
+/root/dcsc/dcsc.c:236:19: note: each undeclared identifier is reported only once for each function it appears in
+/root/dcsc/dcsc.c:246:2: error: implicit declaration of function ‘register_testbus_device’ [-Werror=implicit-function-declaration]
+  res = register_testbus_device(dev);
+  ^
+/root/dcsc/dcsc.c: In function ‘new_device’:
+/root/dcsc/dcsc.c:274:21: error: incompatible type for argument 1 of ‘setup_device’
+                     device_size);
+                     ^
+/root/dcsc/dcsc.c:172:12: note: expected ‘struct dcsc_dev *’ but argument is of type ‘struct dcsc_dev’
+ static int setup_device(
+            ^
+/root/dcsc/dcsc.c: In function ‘register_testbus_device’:
+/root/dcsc/dcsc.c:380:18: error: ‘testbus_type’ undeclared (first use in this function)
+  dev->dev.bus = &testbus_type;
+                  ^
+/root/dcsc/dcsc.c:381:21: error: ‘testbus’ undeclared (first use in this function)
+  dev->dev.parent = &testbus;
+                     ^
+/root/dcsc/dcsc.c:392:23: warning: assignment from incompatible pointer type [enabled by default]
+  dev->size_attr.store = store_size_attr;
+                       ^
+/root/dcsc/dcsc.c:394:2: error: ‘ret’ undeclared (first use in this function)
+  ret = device_create_file(&dev->dev, &dev->size_attr);
+  ^
+/root/dcsc/dcsc.c:401:25: warning: assignment from incompatible pointer type [enabled by default]
+  dev->access_attr.store = store_access_attr;
+                         ^
+/root/dcsc/dcsc.c: In function ‘store_createnewdevice_attr’:
+/root/dcsc/dcsc.c:438:8: warning: unused variable ‘p’ [-Wunused-variable]
+  char *p;
+        ^
+/root/dcsc/dcsc.c: In function ‘register_testbus_driver’:
+/root/dcsc/dcsc.c:509:24: error: ‘testbus_type’ undeclared (first use in this function)
+  driver->driver.bus = &testbus_type;
+                        ^
+/root/dcsc/dcsc.c:520:38: warning: assignment from incompatible pointer type [enabled by default]
+   driver->createnewdevice_attr.store = store_createnewdevice_attr;
+                                      ^
+/root/dcsc/dcsc.c: In function ‘dcsc_init’:
+/root/dcsc/dcsc.c:640:9: warning: unused variable ‘i’ [-Wunused-variable]
+  size_t i;
+         ^
+/root/dcsc/dcsc.c: At top level:
+/root/dcsc/dcsc.c:622:39: warning: ‘dcsc_ops’ defined but not used [-Wunused-variable]
+ static struct block_device_operations dcsc_ops = {
+                                       ^
+cc1: some warnings being treated as errors
+make[2]: *** [/root/dcsc/dcsc.o] Error 1
+make[1]: *** [_module_/root/dcsc] Error 2
+make[1]: Leaving directory `/usr/src/kernels/3.10.0-1127.8.2.el7.x86_64'
+make: *** [default] Error 2
