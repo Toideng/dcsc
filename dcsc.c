@@ -31,9 +31,10 @@ static int nsectors = (128 * 1024 * 1024) / KERNEL_SECTOR_SIZE; // twelvety-eigh
 static int ndevices = 1;
 
 struct testbus_driver {
+	char *name;
 //	struct module *module;
 	struct device_driver driver;
-} dcsc_driver;
+} dcsc_driver = {"dcsc_driver"};
 
 struct dcsc_dev {
 	char *name;
@@ -81,7 +82,7 @@ static void testbus_dev_release(
 }
 
 int register_testbus_device(
-	struct testbus_device *dev
+	struct dcsc_dev *dev
 	)
 {
 	dev->dev.bus = &testbus_type;
@@ -92,7 +93,7 @@ int register_testbus_device(
 }
 
 void unregister_testbus_device(
-	struct testbus_device *dev
+	struct dcsc_dev *dev
 	)
 {
 	device_unregister(&dev->dev);
@@ -103,7 +104,8 @@ int register_testbus_driver(
 	)
 {
 	int ret;
-	
+
+	driver->driver.name = driver->name;
 	driver->driver.bus = &testbus_type;
 	ret = driver_register(&driver->driver);
 	if (ret)
@@ -143,7 +145,7 @@ static int dcsc_xfer_bvec(
 	if (bvec->bv_len % KERNEL_SECTOR_SIZE)
 		printk(KERN_WARNING "%s: "
 		       "kernel has requested transfer of a non-integer # of sectors.\xa",
-		       dev->gd->disk_name);
+		       dev->name);
 
 	if ((offset + len) > dev->size) {
 		printk(KERN_WARNING "Beyond-end write (0x%016lx+0x%016lx)\n",
@@ -329,6 +331,7 @@ static void setup_device(
 	int which
 	)
 {
+	int res;
 	/*
 	 * Get some memory.
 	 */
@@ -365,18 +368,18 @@ static void setup_device(
 		printk(KERN_ALERT "alloc_disk failure\xa");
 		goto out_kfree;
 	}
-	snprintf(dev->name, 6, "dcsc%c", which + 'a');
 	dev->gd->major = dcsc_major;
 	dev->gd->first_minor = which * DCSC_MINORS;
 	dev->gd->fops = &dcsc_ops;
 	dev->gd->queue = dev->queue;
 	dev->gd->private_data = dev;
-	dev->gd->disk_name = dev->name;
+	snprintf(dev->gd->disk_name, 6, "dcsc%c", which + 'a');
+	dev->name = dev->gd->disk_name;
 
 	set_capacity(dev->gd, nsectors * (hardsect_size / KERNEL_SECTOR_SIZE));
 	add_disk(dev->gd);
 
-	dev->driver = ...,
+	dev->driver = &dcsc_driver;
 	res = register_testbus_device(dev);
 	if (res)
 	{
@@ -450,19 +453,19 @@ static int __init dcsc_init(void)
 	printk(KERN_NOTICE "dcsc: Create a simple bus\xa");
 	res = bus_register(&testbus_type);
 	if (res) {
-		printk(KERN_ALERT "dcsc: failed to create a bus type, stop\xa", res);
+		printk(KERN_ALERT "dcsc: failed to create a bus type (ret %d), stop\xa", res);
 		return -EINVAL;
 	}
 	res = device_register(&testbus);
 	if (res) {
-		printk(KERN_ALERT "dcsc: failed to create a bus, stop\xa", res);
+		printk(KERN_ALERT "dcsc: failed to create a bus (ret %d), stop\xa", res);
 		return -EINVAL;
 	}
 
 	printk(KERN_NOTICE "dcsc: Register the driver on the bus\xa");
 	res = register_testbus_driver(&dcsc_driver);
 	if (res) {
-		printk(KERN_ALERT "dcsc: failed to register the driver, stop\xa", res);
+		printk(KERN_ALERT "dcsc: failed to register the driver (ret %d), stop\xa", res);
 		return -EINVAL;
 	}
 
@@ -533,6 +536,9 @@ static void __exit dcsc_exit(void)
 	}
 	printk(KERN_NOTICE "dcsc: Finitialize: unregister major num (%d)\xa", dcsc_major);
 	unregister_blkdev(dcsc_major, "dcsc");
+	unregister_testbus_driver(&dcsc_driver);
+	device_unregister(&testbus);
+	bus_unregister(&testbus_type);
 	kfree(Devices);
 
 	printk(KERN_NOTICE "dcsc: Finitialize complete\xa");
