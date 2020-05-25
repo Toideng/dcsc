@@ -25,7 +25,7 @@ MODULE_LICENSE("Dual BSD/GPL");
 #define MAXDEVICES 16
 #define KERNEL_SECTOR_SIZE 512
 
-#if 1
+#if 0
 #define MARKENTER(f) printk(KERN_DEBUG "dcsc: enter " #f "\xa");
 #define MARKLEAVE(f) printk(KERN_DEBUG "dcsc: leave " #f "\xa");
 #else
