@@ -61,6 +61,22 @@ static struct {
 
 
 
+static int setup_device(
+	struct dcsc_dev *dev,
+	int which,
+	char *name,
+	size_t name_len,
+	size_t device_size
+);
+
+int new_device(
+	char *name,
+	size_t name_len,
+	size_t device_size
+);
+
+
+
 
 
 
@@ -154,129 +170,6 @@ done:
 			req = blk_fetch_request(q);
 		}
 	}
-}
-
-
-
-
-
-
-
-
-
-
-/*
- * Set up our internal device.
- */
-
-static int setup_device(
-	struct dcsc_dev *dev,
-	int which,
-	char *name,
-	size_t name_len,
-	size_t device_size
-	)
-{
-	int res;
-
-	if (which >= Devices.cap_devices)
-		return -EBADSLT;
-
-	if (device_size % KERNEL_SECTOR_SIZE)
-		return -EINVAL;
-	device_size /= KERNEL_SECTOR_SIZE;
-
-	if (name_len >= 32)
-		return -EOVERFLOW;
-
-	/*
-	 * Get some memory.
-	 */
-
-	memset(dev, 0, sizeof *dev);
-	dev->size = device_size;
-	dev->size_cap = device_size;
-	dev->data = vmalloc(dev->size * KERNEL_SECTOR_SIZE);
-	if (!dev->data) {
-		printk(KERN_ALERT "vmalloc failure.\xa");
-		return -ENOMEM;
-	}
-	memset(dev->data, 0, dev->size);
-	dev->driver = &dcsc_driver;
-
-	spin_lock_init(&dev->lock);
-
-	/*
-	 * Setup the I/O queue
-	 */
-
-	dev->queue = blk_init_queue(dcsc_request, &dev->lock);
-	if (!dev->queue)
-	{
-		vfree(dev->data);
-		return -ENOMEM;
-	}
-
-	blk_queue_logical_block_size(dev->queue, KERNEL_SECTOR_SIZE);
-	dev->queue->queuedata = dev;
-
-	/*
-	 * Setup the gendisk structure.
-	 */
-
-	dev->gd = alloc_disk(DCSC_MINORS);
-	if (!dev->gd) {
-		printk(KERN_ALERT "alloc_disk failure\xa");
-		blk_cleanup_queue(dev->queue);
-		vfree(dev->data);
-		return -ENOMEM;
-	}
-	dev->gd->major = dcsc_major;
-	dev->gd->first_minor = which * DCSC_MINORS;
-	dev->gd->fops = &dcsc_ops;
-	dev->gd->queue = dev->queue;
-	dev->gd->private_data = dev;
-
-	snprintf(dev->gd->disk_name, ((32 < name_len) ? 32 : name_len), "%s", name);
-	dev->name = dev->gd->disk_name;
-
-	set_capacity(dev->gd, device_size);
-	add_disk(dev->gd);
-
-	res = register_testbus_device(dev);
-	if (res)
-	{
-		printk(KERN_ALERT "register_testbus_device failure\xa");
-		blk_cleanup_queue(dev->queue);
-		del_gendisk(dev->gd);
-		put_disk(dev->gd);
-		vfree(dev->data);
-		return res;
-	}
-
-	return 0;
-}
-
-int new_device(
-	char *name,
-	size_t name_len,
-	size_t device_size
-	)
-{
-	int res;
-	if (Devices.n_devices == Devices.cap_devices)
-		return -ENOMEM;
-
-	res = setup_device(Devices.Devices[Devices.n_devices],
-	                   Devices.n_devices,
-	                   name,
-	                   name_len,
-	                   device_size);
-	if (res)
-		return res;
-
-	Devices.n_devices++;
-	return 0;
 }
 
 
@@ -625,6 +518,129 @@ static struct block_device_operations dcsc_ops = {
 	.release         = dcsc_release,
 	.ioctl           = dcsc_ioctl,
 };
+
+
+
+
+
+
+
+
+
+
+/*
+ * Set up our internal device.
+ */
+
+static int setup_device(
+	struct dcsc_dev *dev,
+	int which,
+	char *name,
+	size_t name_len,
+	size_t device_size
+	)
+{
+	int res;
+
+	if (which >= Devices.cap_devices)
+		return -EBADSLT;
+
+	if (device_size % KERNEL_SECTOR_SIZE)
+		return -EINVAL;
+	device_size /= KERNEL_SECTOR_SIZE;
+
+	if (name_len >= 32)
+		return -EOVERFLOW;
+
+	/*
+	 * Get some memory.
+	 */
+
+	memset(dev, 0, sizeof *dev);
+	dev->size = device_size;
+	dev->size_cap = device_size;
+	dev->data = vmalloc(dev->size * KERNEL_SECTOR_SIZE);
+	if (!dev->data) {
+		printk(KERN_ALERT "vmalloc failure.\xa");
+		return -ENOMEM;
+	}
+	memset(dev->data, 0, dev->size);
+	dev->driver = &dcsc_driver;
+
+	spin_lock_init(&dev->lock);
+
+	/*
+	 * Setup the I/O queue
+	 */
+
+	dev->queue = blk_init_queue(dcsc_request, &dev->lock);
+	if (!dev->queue)
+	{
+		vfree(dev->data);
+		return -ENOMEM;
+	}
+
+	blk_queue_logical_block_size(dev->queue, KERNEL_SECTOR_SIZE);
+	dev->queue->queuedata = dev;
+
+	/*
+	 * Setup the gendisk structure.
+	 */
+
+	dev->gd = alloc_disk(DCSC_MINORS);
+	if (!dev->gd) {
+		printk(KERN_ALERT "alloc_disk failure\xa");
+		blk_cleanup_queue(dev->queue);
+		vfree(dev->data);
+		return -ENOMEM;
+	}
+	dev->gd->major = dcsc_major;
+	dev->gd->first_minor = which * DCSC_MINORS;
+	dev->gd->fops = &dcsc_ops;
+	dev->gd->queue = dev->queue;
+	dev->gd->private_data = dev;
+
+	snprintf(dev->gd->disk_name, ((32 < name_len) ? 32 : name_len), "%s", name);
+	dev->name = dev->gd->disk_name;
+
+	set_capacity(dev->gd, device_size);
+	add_disk(dev->gd);
+
+	res = register_testbus_device(dev);
+	if (res)
+	{
+		printk(KERN_ALERT "register_testbus_device failure\xa");
+		blk_cleanup_queue(dev->queue);
+		del_gendisk(dev->gd);
+		put_disk(dev->gd);
+		vfree(dev->data);
+		return res;
+	}
+
+	return 0;
+}
+
+int new_device(
+	char *name,
+	size_t name_len,
+	size_t device_size
+	)
+{
+	int res;
+	if (Devices.n_devices == Devices.cap_devices)
+		return -ENOMEM;
+
+	res = setup_device(Devices.Devices[Devices.n_devices],
+	                   Devices.n_devices,
+	                   name,
+	                   name_len,
+	                   device_size);
+	if (res)
+		return res;
+
+	Devices.n_devices++;
+	return 0;
+}
 
 
 
