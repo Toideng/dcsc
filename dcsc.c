@@ -29,17 +29,26 @@ static int dcsc_major = 0;
 static int hardsect_size = KERNEL_SECTOR_SIZE;
 static int nsectors = (128 * 1024 * 1024) / KERNEL_SECTOR_SIZE; // twelvety-eight MiB
 static int ndevices = 1;
+static int maxdevices = 16;
+
+static int interactive_creation_allowed = 0;
+module_param(interactive_creation_allowed, int, 0);
 
 struct testbus_driver {
 	char *name;
-//	struct module *module;
+	struct driver_attribute createnewdevice_attr;
 	struct device_driver driver;
 } dcsc_driver = {"dcsc_driver"};
 
 struct dcsc_dev {
 	char *name;
+	int access_mode;             /* 0 for read-write, other for read-only */
+	struct device_attribute access_attr;
 	struct testbus_driver *driver;
-	size_t size;                 /* Device size in sectors */
+	struct device_attribute size_attr;
+	size_t size;                 /* Current device size in sectors */
+	size_t size_cap;             /* Maximum device size in sectors,
+	                              * i.e. allocated storage area for `data` */
 	u8 *data;                    /* The data array */
 	spinlock_t lock;
 	struct request_queue *queue;
@@ -48,6 +57,11 @@ struct dcsc_dev {
 };
 
 static struct dcsc_dev *Devices = NULL;
+static struct {
+	size_t n_devices;
+	size_t cap_devices;
+	struct dcsc_dev *Devices;
+} Devices = {0, maxdevices, NULL};
 
 
 
@@ -81,15 +95,109 @@ static void testbus_dev_release(
 	return;
 }
 
+ssize_t show_size_attr(
+	struct device *plaindev,
+	struct device_attribute *attr,
+	char *buf
+	)
+{
+	struct dcsc_dev *dev = container_of(plaindev, struct dcsc_dev, dev);
+	return snprintf(buf, PAGE_SIZE, "%lu\xa", dev->size);
+}
+
+ssize_t store_size_attr(
+	struct device *plaindev,
+	struct device_attribute *attr,
+	char *buf,
+	size_t count
+	)
+{
+	struct dcsc_dev *dev = container_of(plaindev, struct dcsc_dev, dev);
+	size_t size = 0;
+	size_t i;
+
+	for (i = 0;  i < count;  i++)
+	{
+		if (buf[i] == 0xa)
+			break;
+		if (buf[i] < '0' || buf[i] > '9')
+			return -EINVAL;
+		size *= 10;
+		size += buf[i] - '0';
+	}
+
+	if (size > dev->size_cap)
+		return -EINVAL;
+	if (size % hardsect_size)
+		return -EINVAL;
+	dev->size = size;
+
+	return 0;
+}
+
+ssize_t show_access_attr(
+	struct device *plaindev,
+	struct device_attribute *attr,
+	char *buf
+	)
+{
+	struct dcsc_dev *dev = container_of(plaindev, struct dcsc_dev, dev);
+	return snprintf(buf, PAGE_SIZE, "%d\xa", !!dev->access_mode);
+}
+
+ssize_t store_access_attr(
+	struct device *plaindev,
+	struct device_attribute *attr,
+	char *buf,
+	size_t count
+	)
+{
+	struct dcsc_dev *dev = container_of(plaindev, struct dcsc_dev, dev);
+
+	if (count < 1)
+		return -EINVAL;
+	if (buf[0] != '0' && buf[0] != '1')
+		return -EINVAL;
+
+	dev->access_mode = buf[0] - '0';
+	return 0;
+}
+
+
 int register_testbus_device(
 	struct dcsc_dev *dev
 	)
 {
+	int res;
+
 	dev->dev.bus = &testbus_type;
 	dev->dev.parent = &testbus;
 	dev->dev.release = testbus_dev_release;
 	dev_set_name(&dev->dev, "%s", dev->name);
-	return device_register(&dev->dev);
+
+	res = device_register(&dev->dev);
+	if (res)
+		return res;
+
+	dev->size_attr.attr.name = "size";
+	dev->size_attr.attr.mode = S_IRUGO | S_IWUGO;
+	dev->size_attr.show = show_size_attr;
+	dev->size_attr.store = store_size_attr;
+
+	ret = device_create_file(&dev->dev, &dev->size_attr);
+	if (ret)
+		return ret;
+
+	dev->access_attr.attr.name = "access";
+	dev->access_attr.attr.mode = S_IRUGO | S_IWUGO;
+	dev->access_attr.show = show_access_attr;
+	dev->access_attr.store = store_access_attr;
+
+	ret = device_create_file(&dev->dev, &dev->access_attr);
+	if (ret)
+		return ret;
+
+	return 0;
 }
 
 void unregister_testbus_device(
@@ -99,6 +207,118 @@ void unregister_testbus_device(
 	device_unregister(&dev->dev);
 }
 
+static ssize_t show_createnewdevice_attr(
+	struct device_driver *driver,
+	char *buf
+	)
+{
+	return snprintf(buf, PAGE_SIZE, "Specify a device name and size in KiB, e.g. \"dcscb 12*1024\"\xa");
+}
+
+int new_device(
+	char *name,
+	size_t name_len,
+	size_t device_size
+	)
+{
+	int res;
+	if (Devices.n_devices == Devices.cap_devices)
+		return -ENOMEM;
+
+	res = setup_device(Devices.Devices[Devices.n_devices],
+	                   Devices.n_devices,
+	                   name,
+	                   name_len,
+	                   device_size);
+	if (res)
+		return res;
+
+	Devices.n_devices++;
+	return 0;
+}
+
+static ssize_t store_createnewdevice_attr(
+	struct device_driver *driver,
+	char *buf,
+	size_t count
+	)
+{
+	size_t i;
+	char *namestart;
+	char *sizestart;
+	size_t namelen;
+	size_t sizelen;
+	size_t size;
+	size_t multiplier;
+	char *p;
+
+	// check format for being "[[:alnum:]]+\x20[0-9*\x20]+"
+	namestart = buf;
+	for (i = 0;  i < count;  i++) {
+		if (buf[i] == 0x20)
+			break;
+		if ((buf[i] >= '0' && buf[i] <= '9')
+		 || (buf[i] >= 'a' && buf[i] <= 'z')
+		 || (buf[i] >= 'A' && buf[i] <= 'Z'))
+		{
+			continue;
+		}
+
+		return -EINVAL;
+	}
+	if (i == count)
+		return -EINVAL;
+	namelen = i;
+
+	i++;
+	sizestart = buf + i;
+	for (;  i < count;  i++) {
+		if (buf[i] == 0x20
+		 || buf[i] == 0x2a
+		 || (buf[i] >= '0' && buf[i] <= '9'))
+		{
+			continue;
+		}
+
+		return -EINVAL;
+	}
+	sizelen = (buf + i) - sizestart;
+
+	if (!namelen || !sizelen)
+		return -EINVAL;
+
+	size = 1;
+	multiplier = 0;
+	for (i = 0;  i < sizelen;  i++) {
+		if (sizestart[i] == 0x20)
+			continue;
+		if (sizestart[i] == 0x2a) {
+			size *= multiplier;
+			multiplier = 0;
+			continue;
+		}
+
+		multiplier *= 10;
+		multiplier += sizestart[i] - '0';
+	}
+	size *= multiplier;
+
+	if (size == 0)
+		return -EINVAL;
+
+	// at this point, `size` has numerical size and
+	// `namestart[0..namelen-1]` has text name for the new device
+
+	return create_device(namestart, namelen, size);
+
+	res = new_device(namestart, namelen, size);
+	if (res)
+		return res;
+	return 0;
+}
+
+
+
 int register_testbus_driver(
 	struct testbus_driver *driver
 	)
@@ -107,7 +327,17 @@ int register_testbus_driver(
 
 	driver->driver.name = driver->name;
 	driver->driver.bus = &testbus_type;
+
+	driver->createnewdevice_attr.attr.name = "createnewdevice";
+	driver->createnewdevice_attr.attr.mode = S_IRUGO | S_IWUGO;
+	driver->createnewdevice_attr.show = show_createnewdevice_attr;
+	driver->createnewdevice_attr.store = store_createnewdevice_attr;
+
 	ret = driver_register(&driver->driver);
+	if (ret)
+		return ret;
+
+	ret = driver_create_file(&driver->driver, &driver->createnewdevice_attr);
 	if (ret)
 		return ret;
 	return 0;
@@ -326,9 +556,12 @@ static struct block_device_operations dcsc_ops = {
  * Set up our internal device.
  */
 
-static void setup_device(
+static int setup_device(
 	struct dcsc_dev *dev,
-	int which
+	int which,
+	char *name,
+	size_t name_len,
+	size_t device_size
 	)
 {
 	int res;
@@ -338,10 +571,8 @@ static void setup_device(
 
 	memset(dev, 0, sizeof *dev);
 	dev->size = nsectors * hardsect_size;
-//	dev->data = kmalloc(dev->size, GFP_KERNEL);
 	dev->data = vmalloc(dev->size);
 	if (!dev->data) {
-//		printk(KERN_ALERT "kmalloc failure.\xa");
 		printk(KERN_ALERT "vmalloc failure.\xa");
 		return;
 	}
@@ -354,7 +585,7 @@ static void setup_device(
 
 	dev->queue = blk_init_queue(dcsc_request, &dev->lock);
 	if (!dev->queue)
-		goto out_kfree;
+		goto out_vfree;
 
 	blk_queue_logical_block_size(dev->queue, hardsect_size);
 	dev->queue->queuedata = dev;
@@ -366,7 +597,7 @@ static void setup_device(
 	dev->gd = alloc_disk(DCSC_MINORS);
 	if (!dev->gd) {
 		printk(KERN_ALERT "alloc_disk failure\xa");
-		goto out_kfree;
+		goto out_vfree;
 	}
 	dev->gd->major = dcsc_major;
 	dev->gd->first_minor = which * DCSC_MINORS;
@@ -384,12 +615,12 @@ static void setup_device(
 	if (res)
 	{
 		printk(KERN_ALERT "register_testbus_device failure\xa");
-		goto out_kfree;
+		goto out_vfree;
 	}
 
 	return;
 
-out_kfree:
+out_vfree:
 	vfree(dev->data);
 	return;
 }
