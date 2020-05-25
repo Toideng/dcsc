@@ -1,6 +1,8 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/init.h>
+#include <linux/device.h>
+#include <linux/string.h>
 
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -16,7 +18,7 @@
 #include <linux/blkdev.h>
 #include <linux/buffer_head.h>
 #include <linux/bio.h>
-#include <linux/pci.h>
+//#include <linux/pci.h>
 
 MODULE_LICENSE("GPL");
 
@@ -28,15 +30,93 @@ static int hardsect_size = KERNEL_SECTOR_SIZE;
 static int nsectors = (128 * 1024 * 1024) / KERNEL_SECTOR_SIZE; // twelvety-eight MiB
 static int ndevices = 1;
 
+struct testbus_driver {
+//	struct module *module;
+	struct device_driver driver;
+} dcsc_driver;
+
 struct dcsc_dev {
+	char *name;
+	struct testbus_driver *driver;
 	size_t size;                 /* Device size in sectors */
 	u8 *data;                    /* The data array */
 	spinlock_t lock;
 	struct request_queue *queue;
 	struct gendisk *gd;
+	struct device dev;
 };
 
 static struct dcsc_dev *Devices = NULL;
+
+
+
+
+
+
+
+
+
+
+static void testbus_release(
+	struct device *dev
+	)
+{
+	return;
+}
+
+struct device testbus = {
+	.init_name   = "testbus",
+	.release  = testbus_release
+};
+
+struct bus_type testbus_type = {
+	.name = "testbus",
+};
+
+static void testbus_dev_release(
+	struct device *dev
+	)
+{
+	return;
+}
+
+int register_testbus_device(
+	struct testbus_device *dev
+	)
+{
+	dev->dev.bus = &testbus_type;
+	dev->dev.parent = &testbus;
+	dev->dev.release = testbus_dev_release;
+	dev_set_name(&dev->dev, "%s", dev->name);
+	return device_register(&dev->dev);
+}
+
+void unregister_testbus_device(
+	struct testbus_device *dev
+	)
+{
+	device_unregister(&dev->dev);
+}
+
+int register_testbus_driver(
+	struct testbus_driver *driver
+	)
+{
+	int ret;
+	
+	driver->driver.bus = &testbus_type;
+	ret = driver_register(&driver->driver);
+	if (ret)
+		return ret;
+	return 0;
+}
+
+void unregister_testbus_driver(
+	struct testbus_driver *driver
+	)
+{
+	driver_unregister(&driver->driver);
+}
 
 
 
@@ -258,8 +338,8 @@ static void setup_device(
 //	dev->data = kmalloc(dev->size, GFP_KERNEL);
 	dev->data = vmalloc(dev->size);
 	if (!dev->data) {
-//		printk(KERN_NOTICE "kmalloc failure.\xa");
-		printk(KERN_NOTICE "vmalloc failure.\xa");
+//		printk(KERN_ALERT "kmalloc failure.\xa");
+		printk(KERN_ALERT "vmalloc failure.\xa");
 		return;
 	}
 	memset(dev->data, 0, dev->size);
@@ -282,18 +362,28 @@ static void setup_device(
 
 	dev->gd = alloc_disk(DCSC_MINORS);
 	if (!dev->gd) {
-		printk(KERN_NOTICE "alloc_disk failure\xa");
+		printk(KERN_ALERT "alloc_disk failure\xa");
 		goto out_kfree;
 	}
+	snprintf(dev->name, 6, "dcsc%c", which + 'a');
 	dev->gd->major = dcsc_major;
 	dev->gd->first_minor = which * DCSC_MINORS;
 	dev->gd->fops = &dcsc_ops;
 	dev->gd->queue = dev->queue;
 	dev->gd->private_data = dev;
-	snprintf(dev->gd->disk_name, 6, "dcsc%c", which + 'a');
+	dev->gd->disk_name = dev->name;
 
 	set_capacity(dev->gd, nsectors * (hardsect_size / KERNEL_SECTOR_SIZE));
 	add_disk(dev->gd);
+
+	dev->driver = ...,
+	res = register_testbus_device(dev);
+	if (res)
+	{
+		printk(KERN_ALERT "register_testbus_device failure\xa");
+		goto out_kfree;
+	}
+
 	return;
 
 out_kfree:
@@ -349,32 +439,51 @@ static int __init dcsc_init(void)
 	size_t i;
 	int res;
 	((void)res);
-	printk(KERN_ALERT "dcsc: Initialize the module\xa");
+	printk(KERN_NOTICE "dcsc: Initialize the module\xa");
 
-//	printk(KERN_ALERT "dcsc: register the pci driver:\xa");
+//	printk(KERN_NOTICE "dcsc: register the pci driver:\xa");
 //	if ((res = pci_register_driver(&pcidrv)))
 //	{
 //		printk(KERN_ALERT "dcsc: register the pci driver failed with code \"%d\"\xa", res);
 //	}
 
+	printk(KERN_NOTICE "dcsc: Create a simple bus\xa");
+	res = bus_register(&testbus_type);
+	if (res) {
+		printk(KERN_ALERT "dcsc: failed to create a bus type, stop\xa", res);
+		return -EINVAL;
+	}
+	res = device_register(&testbus);
+	if (res) {
+		printk(KERN_ALERT "dcsc: failed to create a bus, stop\xa", res);
+		return -EINVAL;
+	}
+
+	printk(KERN_NOTICE "dcsc: Register the driver on the bus\xa");
+	res = register_testbus_driver(&dcsc_driver);
+	if (res) {
+		printk(KERN_ALERT "dcsc: failed to register the driver, stop\xa", res);
+		return -EINVAL;
+	}
+
 	/*
 	 * Get registered.
 	 */
 
-	printk(KERN_ALERT "dcsc: Alloc a major number\xa");
+	printk(KERN_NOTICE "dcsc: Alloc a major number\xa");
 	dcsc_major = register_blkdev(dcsc_major, "dcsc");
 	if (dcsc_major <= 0) {
 		printk(KERN_ALERT "dcsc: failed to get major number\xa");
 		printk(KERN_ALERT "dcsc: failed to init\xa");
 		return -EBUSY;
 	}
-	printk(KERN_ALERT "dcsc: got num: %d\xa", dcsc_major);
+	printk(KERN_NOTICE "dcsc: got num: %d\xa", dcsc_major);
 
 	/*
 	 * Allocate the device array, and initialize each one.
 	 */
 
-	printk(KERN_ALERT "dcsc: Initialize the devices\xa");
+	printk(KERN_NOTICE "dcsc: Initialize the devices\xa");
 	Devices = kmalloc(ndevices * sizeof(struct dcsc_dev), GFP_KERNEL);
 	if (!Devices)
 	{
@@ -386,7 +495,7 @@ static int __init dcsc_init(void)
 	for (i = 0;  i < ndevices;  i++) 
 		setup_device(Devices + i, i);
 
-	printk(KERN_ALERT "dcsc: Initialize complete and successfull\xa");
+	printk(KERN_NOTICE "dcsc: Initialize complete and successfull\xa");
 	return 0;
 
 out_unregister:
@@ -399,31 +508,34 @@ out_unregister:
 static void __exit dcsc_exit(void)
 {
 	size_t i;
-	printk(KERN_ALERT "dcsc: Finitialize the module\xa");
-//	printk(KERN_ALERT "dcsc: unregister pci driver\xa");
+	printk(KERN_NOTICE "dcsc: Finitialize the module\xa");
+//	printk(KERN_NOTICE "dcsc: unregister pci driver\xa");
 //	pci_unregister_driver(&pcidrv);
 
 	for (i = 0; i < ndevices; i++) {
 		struct dcsc_dev *dev = Devices + i;
-		printk(KERN_ALERT "dcsc: Finitialize the device %s\xa", dev->gd->disk_name);
+		printk(KERN_NOTICE "dcsc: Finitialize the device %s\xa", dev->name);
 
-		printk(KERN_ALERT "dcsc: Finitialize the device %s: dealloc disk\xa", dev->gd->disk_name);
+		printk(KERN_NOTICE "dcsc: Finitialize the device %s: dealloc disk\xa", dev->name);
 		if (dev->gd) {
 			del_gendisk(dev->gd);
 			put_disk(dev->gd);
 		}
-		printk(KERN_ALERT "dcsc: Finitialize the device %s: dealloc queue\xa", dev->gd->disk_name);
+		printk(KERN_NOTICE "dcsc: Finitialize the device %s: dealloc queue\xa", dev->name);
 		if (dev->queue)
 			blk_cleanup_queue(dev->queue);
-		printk(KERN_ALERT "dcsc: Finitialize the device %s: dealloc storage\xa", dev->gd->disk_name);
+		printk(KERN_NOTICE "dcsc: Finitialize the device %s: dealloc storage\xa", dev->name);
 		if (dev->data)
 			vfree(dev->data);
+
+		printk(KERN_NOTICE "dcsc: Finitialize the device %s: unregister device\xa", dev->name);
+		unregister_testbus_device(dev);
 	}
-	printk(KERN_ALERT "dcsc: Finitialize: unregister major num (%d)\xa", dcsc_major);
+	printk(KERN_NOTICE "dcsc: Finitialize: unregister major num (%d)\xa", dcsc_major);
 	unregister_blkdev(dcsc_major, "dcsc");
 	kfree(Devices);
 
-	printk(KERN_ALERT "dcsc: Finitialize complete\xa");
+	printk(KERN_NOTICE "dcsc: Finitialize complete\xa");
 }
 
 
