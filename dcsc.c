@@ -18,16 +18,14 @@
 #include <linux/blkdev.h>
 #include <linux/buffer_head.h>
 #include <linux/bio.h>
-//#include <linux/pci.h>
 
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("Dual BSD/GPL");
 
 #define DCSC_MINORS 16
 #define KERNEL_SECTOR_SIZE 512
 
 static int dcsc_major = 0;
-static int hardsect_size = KERNEL_SECTOR_SIZE;
-static int nsectors = (128 * 1024 * 1024) / KERNEL_SECTOR_SIZE; // twelvety-eight MiB
+static int default_size = 128 * 1024 * 1024; // twelvety-eight MiB
 static int ndevices = 1;
 static int maxdevices = 16;
 
@@ -56,13 +54,27 @@ struct dcsc_dev {
 	struct device dev;
 };
 
-static struct dcsc_dev *Devices = NULL;
 static struct {
 	size_t n_devices;
 	size_t cap_devices;
 	struct dcsc_dev *Devices;
 } Devices = {0, maxdevices, NULL};
 
+static struct device testbus = {
+	.init_name   = "testbus",
+	.release  = testbus_release
+};
+
+static struct bus_type testbus_type = {
+	.name = "testbus",
+};
+
+static struct block_device_operations dcsc_ops = {
+	.owner           = THIS_MODULE,
+	.open            = dcsc_open,
+	.release         = dcsc_release,
+	.ioctl           = dcsc_ioctl,
+};
 
 
 
@@ -72,23 +84,138 @@ static struct {
 
 
 
-static void testbus_release(
+
+int new_device(
+	char *name,
+	size_t name_len,
+	size_t device_size
+	)
+{
+	int res;
+	if (Devices.n_devices == Devices.cap_devices)
+		return -ENOMEM;
+
+	res = setup_device(Devices.Devices[Devices.n_devices],
+	                   Devices.n_devices,
+	                   name,
+	                   name_len,
+	                   device_size);
+	if (res)
+		return res;
+
+	Devices.n_devices++;
+	return 0;
+}
+
+/*
+ * Set up our internal device.
+ */
+
+static int setup_device(
+	struct dcsc_dev *dev,
+	int which,
+	char *name,
+	size_t name_len,
+	size_t device_size
+	)
+{
+	int res;
+
+	if (which >= Devices.cap_devices)
+		return -EBADSLT;
+
+	if (size % KERNEL_SECTOR_SIZE)
+		return -EINVAL;
+	size /= KERNEL_SECTOR_SIZE;
+
+	if (name_len >= 32)
+		return -EOVERFLOW;
+
+	/*
+	 * Get some memory.
+	 */
+
+	memset(dev, 0, sizeof *dev);
+	dev->size = device_size;
+	dev->size_cap = device_size;
+	dev->data = vmalloc(dev->size * KERNEL_SECTOR_SIZE);
+	if (!dev->data) {
+		printk(KERN_ALERT "vmalloc failure.\xa");
+		return -ENOMEM;
+	}
+	memset(dev->data, 0, dev->size);
+	dev->driver = &dcsc_driver;
+
+	spin_lock_init(&dev->lock);
+
+	/*
+	 * Setup the I/O queue
+	 */
+
+	dev->queue = blk_init_queue(dcsc_request, &dev->lock);
+	if (!dev->queue)
+	{
+		vfree(dev->data);
+		return -ENOMEM;
+	}
+
+	blk_queue_logical_block_size(dev->queue, KERNEL_SECTOR_SIZE);
+	dev->queue->queuedata = dev;
+
+	/*
+	 * Setup the gendisk structure.
+	 */
+
+	dev->gd = alloc_disk(DCSC_MINORS);
+	if (!dev->gd) {
+		printk(KERN_ALERT "alloc_disk failure\xa");
+		blk_cleanup_queue(dev->queue);
+		vfree(dev->data);
+		return -ENOMEM;
+	}
+	dev->gd->major = dcsc_major;
+	dev->gd->first_minor = which * DCSC_MINORS;
+	dev->gd->fops = &dcsc_ops;
+	dev->gd->queue = dev->queue;
+	dev->gd->private_data = dev;
+
+	snprintf(dev->gd->disk_name, MIN(32, name_len), "%s", name);
+	dev->name = dev->gd->disk_name;
+
+	set_capacity(dev->gd, nsectors);
+	add_disk(dev->gd);
+
+	res = register_testbus_device(dev);
+	if (res)
+	{
+		printk(KERN_ALERT "register_testbus_device failure\xa");
+		blk_cleanup_queue(dev->queue);
+		del_gendisk(dev->gd);
+		put_disk(dev->gd);
+		vfree(dev->data);
+		return res;
+	}
+
+	return 0;
+}
+
+
+
+
+
+
+
+
+
+
+void testbus_release(
 	struct device *dev
 	)
 {
 	return;
 }
 
-struct device testbus = {
-	.init_name   = "testbus",
-	.release  = testbus_release
-};
-
-struct bus_type testbus_type = {
-	.name = "testbus",
-};
-
-static void testbus_dev_release(
+void testbus_dev_release(
 	struct device *dev
 	)
 {
@@ -128,9 +255,9 @@ ssize_t store_size_attr(
 
 	if (size > dev->size_cap)
 		return -EINVAL;
-	if (size % hardsect_size)
+	if (size % KERNEL_SECTOR_SIZE)
 		return -EINVAL;
-	dev->size = size;
+	dev->size = size / KERNEL_SECTOR_SIZE;
 
 	return 0;
 }
@@ -215,28 +342,6 @@ static ssize_t show_createnewdevice_attr(
 	return snprintf(buf, PAGE_SIZE, "Specify a device name and size in KiB, e.g. \"dcscb 12*1024\"\xa");
 }
 
-int new_device(
-	char *name,
-	size_t name_len,
-	size_t device_size
-	)
-{
-	int res;
-	if (Devices.n_devices == Devices.cap_devices)
-		return -ENOMEM;
-
-	res = setup_device(Devices.Devices[Devices.n_devices],
-	                   Devices.n_devices,
-	                   name,
-	                   name_len,
-	                   device_size);
-	if (res)
-		return res;
-
-	Devices.n_devices++;
-	return 0;
-}
-
 static ssize_t store_createnewdevice_attr(
 	struct device_driver *driver,
 	char *buf,
@@ -287,7 +392,7 @@ static ssize_t store_createnewdevice_attr(
 	if (!namelen || !sizelen)
 		return -EINVAL;
 
-	size = 1;
+	size = 1024;
 	multiplier = 0;
 	for (i = 0;  i < sizelen;  i++) {
 		if (sizestart[i] == 0x20)
@@ -309,12 +414,7 @@ static ssize_t store_createnewdevice_attr(
 	// at this point, `size` has numerical size and
 	// `namestart[0..namelen-1]` has text name for the new device
 
-	return create_device(namestart, namelen, size);
-
-	res = new_device(namestart, namelen, size);
-	if (res)
-		return res;
-	return 0;
+	return new_device(namestart, namelen, size);
 }
 
 
@@ -328,18 +428,22 @@ int register_testbus_driver(
 	driver->driver.name = driver->name;
 	driver->driver.bus = &testbus_type;
 
-	driver->createnewdevice_attr.attr.name = "createnewdevice";
-	driver->createnewdevice_attr.attr.mode = S_IRUGO | S_IWUGO;
-	driver->createnewdevice_attr.show = show_createnewdevice_attr;
-	driver->createnewdevice_attr.store = store_createnewdevice_attr;
-
 	ret = driver_register(&driver->driver);
 	if (ret)
 		return ret;
 
-	ret = driver_create_file(&driver->driver, &driver->createnewdevice_attr);
-	if (ret)
-		return ret;
+	if (interactive_creation_allowed)
+	{
+		driver->createnewdevice_attr.attr.name = "createnewdevice";
+		driver->createnewdevice_attr.attr.mode = S_IRUGO | S_IWUGO;
+		driver->createnewdevice_attr.show = show_createnewdevice_attr;
+		driver->createnewdevice_attr.store = store_createnewdevice_attr;
+
+		ret = driver_create_file(&driver->driver, &driver->createnewdevice_attr);
+		if (ret)
+			return ret;
+	}
+
 	return 0;
 }
 
@@ -417,13 +521,6 @@ static void dcsc_xfer_request(
 	}
 	return;
 }
-
-
-
-
-
-
-
 
 
 
@@ -516,7 +613,7 @@ int dcsc_ioctl(
 		 */
 		struct dcsc_dev *dev = bdev->bd_disk->private_data;
 		struct hd_geometry geo;
-		long size = dev->size * (hardsect_size / KERNEL_SECTOR_SIZE);
+		long size = dev->size;
 		geo.cylinders = size >> 6;
 		geo.heads = 4;
 		geo.sectors = 16;
@@ -539,165 +636,30 @@ int dcsc_ioctl(
 
 
 
-/*
- * The device operations structure.
- */
-
-static struct block_device_operations dcsc_ops = {
-	.owner           = THIS_MODULE,
-	.open            = dcsc_open,
-	.release         = dcsc_release,
-	.ioctl           = dcsc_ioctl,
-};
-
-
-
-/*
- * Set up our internal device.
- */
-
-static int setup_device(
-	struct dcsc_dev *dev,
-	int which,
-	char *name,
-	size_t name_len,
-	size_t device_size
-	)
-{
-	int res;
-	/*
-	 * Get some memory.
-	 */
-
-	memset(dev, 0, sizeof *dev);
-	dev->size = nsectors * hardsect_size;
-	dev->data = vmalloc(dev->size);
-	if (!dev->data) {
-		printk(KERN_ALERT "vmalloc failure.\xa");
-		return;
-	}
-	memset(dev->data, 0, dev->size);
-	spin_lock_init(&dev->lock);
-
-	/*
-	 * Setup the I/O queue
-	 */
-
-	dev->queue = blk_init_queue(dcsc_request, &dev->lock);
-	if (!dev->queue)
-		goto out_vfree;
-
-	blk_queue_logical_block_size(dev->queue, hardsect_size);
-	dev->queue->queuedata = dev;
-
-	/*
-	 * Setup the gendisk structure.
-	 */
-
-	dev->gd = alloc_disk(DCSC_MINORS);
-	if (!dev->gd) {
-		printk(KERN_ALERT "alloc_disk failure\xa");
-		goto out_vfree;
-	}
-	dev->gd->major = dcsc_major;
-	dev->gd->first_minor = which * DCSC_MINORS;
-	dev->gd->fops = &dcsc_ops;
-	dev->gd->queue = dev->queue;
-	dev->gd->private_data = dev;
-	snprintf(dev->gd->disk_name, 6, "dcsc%c", which + 'a');
-	dev->name = dev->gd->disk_name;
-
-	set_capacity(dev->gd, nsectors * (hardsect_size / KERNEL_SECTOR_SIZE));
-	add_disk(dev->gd);
-
-	dev->driver = &dcsc_driver;
-	res = register_testbus_device(dev);
-	if (res)
-	{
-		printk(KERN_ALERT "register_testbus_device failure\xa");
-		goto out_vfree;
-	}
-
-	return;
-
-out_vfree:
-	vfree(dev->data);
-	return;
-}
-
-
-
-
-
-
-
-
-
-
-#if 0
-static struct pci_device_id ids[] = {
-	{PCI_DEVICE(PCI_VENDOR_ID_MATROX, PCI_DEVICE_ID_MATROX_VIA), },
-	{0, },
-};
-MODULE_DEVICE_TABLE(pci, ids);
-
-static int pcidrv_probe(
-	struct pci_dev *dev,
-	const struct pci_device_id *id
-	)
-{
-	return pci_enable_device(dev);
-}
-
-static void pcidrv_remove(
-	struct pci_dev *dev
-	)
-{
-	return;
-};
-
-static struct pci_driver pcidrv = {
-	.name = "dcsc_pcidrv",
-	.id_table = ids,
-	.probe = pcidrv_probe,
-	.remove = pcidrv_remove,
-};
-#endif
-
-
-
-
-
 static int __init dcsc_init(void)
 {
 	size_t i;
 	int res;
-	((void)res);
-	printk(KERN_NOTICE "dcsc: Initialize the module\xa");
 
-//	printk(KERN_NOTICE "dcsc: register the pci driver:\xa");
-//	if ((res = pci_register_driver(&pcidrv)))
-//	{
-//		printk(KERN_ALERT "dcsc: register the pci driver failed with code \"%d\"\xa", res);
-//	}
+	printk(KERN_NOTICE "dcsc: Initialize the module\xa");
 
 	printk(KERN_NOTICE "dcsc: Create a simple bus\xa");
 	res = bus_register(&testbus_type);
 	if (res) {
 		printk(KERN_ALERT "dcsc: failed to create a bus type (ret %d), stop\xa", res);
-		return -EINVAL;
+		return res;
 	}
 	res = device_register(&testbus);
 	if (res) {
 		printk(KERN_ALERT "dcsc: failed to create a bus (ret %d), stop\xa", res);
-		return -EINVAL;
+		return res;
 	}
 
 	printk(KERN_NOTICE "dcsc: Register the driver on the bus\xa");
 	res = register_testbus_driver(&dcsc_driver);
 	if (res) {
 		printk(KERN_ALERT "dcsc: failed to register the driver (ret %d), stop\xa", res);
-		return -EINVAL;
+		return res;
 	}
 
 	/*
@@ -718,23 +680,31 @@ static int __init dcsc_init(void)
 	 */
 
 	printk(KERN_NOTICE "dcsc: Initialize the devices\xa");
-	Devices = kmalloc(ndevices * sizeof(struct dcsc_dev), GFP_KERNEL);
-	if (!Devices)
+	Devices.Devices = kmalloc(Devices.cap_devices * sizeof(struct dcsc_dev),
+	                          GFP_KERNEL);
+	if (!Devices.Devices)
 	{
 		printk(KERN_ALERT "dcsc: failed to alloc storage for device descriptors\xa");
 		printk(KERN_ALERT "dcsc: failed to kmalloc\xa");
 		printk(KERN_ALERT "dcsc: failed to init\xa");
-		goto out_unregister;
+		unregister_blkdev(dcsc_major, "dcsc");
+		return -ENOMEM;
 	}
-	for (i = 0;  i < ndevices;  i++) 
-		setup_device(Devices + i, i);
+
+	if (!interactive_creation_allowed)
+	{
+		res = new_device("dcsca", 5, default_size);
+		if (res)
+		{
+			printk(KERN_ALERT "dcsc: failed to init automatic device\xa");
+			printk(KERN_ALERT "dcsc: failed to init\xa");
+			unregister_blkdev(dcsc_major, "dcsc");
+			return res;
+		}
+	}
 
 	printk(KERN_NOTICE "dcsc: Initialize complete and successfull\xa");
 	return 0;
-
-out_unregister:
-	unregister_blkdev(dcsc_major, "dcsc");
-	return -ENOMEM;
 }
 
 
@@ -743,11 +713,9 @@ static void __exit dcsc_exit(void)
 {
 	size_t i;
 	printk(KERN_NOTICE "dcsc: Finitialize the module\xa");
-//	printk(KERN_NOTICE "dcsc: unregister pci driver\xa");
-//	pci_unregister_driver(&pcidrv);
 
-	for (i = 0; i < ndevices; i++) {
-		struct dcsc_dev *dev = Devices + i;
+	for (i = 0;  i < Devices.n_devices;  i++) {
+		struct dcsc_dev *dev = Devices.Devices + i;
 		printk(KERN_NOTICE "dcsc: Finitialize the device %s\xa", dev->name);
 
 		printk(KERN_NOTICE "dcsc: Finitialize the device %s: dealloc disk\xa", dev->name);
