@@ -75,6 +75,19 @@ int new_device(
 	size_t device_size
 );
 
+void testbus_release(
+	struct device *dev
+);
+
+static struct device testbus = {
+	.init_name   = "testbus",
+	.release  = testbus_release
+};
+
+static struct bus_type testbus_type = {
+	.name = "testbus",
+};
+
 
 
 
@@ -208,7 +221,7 @@ ssize_t show_size_attr(
 ssize_t store_size_attr(
 	struct device *plaindev,
 	struct device_attribute *attr,
-	char *buf,
+	char const *buf,
 	size_t count
 	)
 {
@@ -248,7 +261,7 @@ ssize_t show_access_attr(
 ssize_t store_access_attr(
 	struct device *plaindev,
 	struct device_attribute *attr,
-	char *buf,
+	char const *buf,
 	size_t count
 	)
 {
@@ -284,18 +297,18 @@ int register_testbus_device(
 	dev->size_attr.show = show_size_attr;
 	dev->size_attr.store = store_size_attr;
 
-	ret = device_create_file(&dev->dev, &dev->size_attr);
-	if (ret)
-		return ret;
+	res = device_create_file(&dev->dev, &dev->size_attr);
+	if (res)
+		return res;
 
 	dev->access_attr.attr.name = "access";
 	dev->access_attr.attr.mode = S_IRUGO | S_IWUGO;
 	dev->access_attr.show = show_access_attr;
 	dev->access_attr.store = store_access_attr;
 
-	ret = device_create_file(&dev->dev, &dev->access_attr);
-	if (ret)
-		return ret;
+	res = device_create_file(&dev->dev, &dev->access_attr);
+	if (res)
+		return res;
 
 	return 0;
 }
@@ -328,7 +341,6 @@ static ssize_t store_createnewdevice_attr(
 	size_t sizelen;
 	size_t size;
 	size_t multiplier;
-	char *p;
 
 	// check format for being "[[:alnum:]]+\x20[0-9*\x20]+"
 	namestart = buf;
@@ -426,15 +438,6 @@ void unregister_testbus_driver(
 {
 	driver_unregister(&driver->driver);
 }
-
-static struct device testbus = {
-	.init_name   = "testbus",
-	.release  = testbus_release
-};
-
-static struct bus_type testbus_type = {
-	.name = "testbus",
-};
 
 
 
