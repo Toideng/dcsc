@@ -142,7 +142,7 @@ static int dcsc_xfer_bvec(
 		       "kernel has requested transfer of a non-integer # of sectors.\xa",
 		       dev->name);
 
-	if ((offset + len) > dev->size) {
+	if ((offset + len) > dev->size * KERNEL_SECTOR_SIZE) {
 		printk(KERN_WARNING "Beyond-end write (0x%016lx+0x%016lx)\n",
 		       offset, len);
 		return -EFAULT;
@@ -154,6 +154,7 @@ static int dcsc_xfer_bvec(
 		memcpy(inmem, indsk, len);
 
 	kunmap_atomic(buffer);
+	MARKLEAVE(dcsc_xfer_bvec);
 
 	return 0;
 }
@@ -180,6 +181,7 @@ static void dcsc_xfer_request(
 			cur_sector += bvec->bv_len / KERNEL_SECTOR_SIZE;
 		}
 	}
+	MARKLEAVE(dcsc_xfer_request);
 	return;
 }
 
@@ -210,6 +212,7 @@ done:
 			req = blk_fetch_request(q);
 		}
 	}
+	MARKLEAVE(dcsc_request);
 }
 
 
