@@ -64,13 +64,13 @@ static struct {
 static int setup_device(
 	struct dcsc_dev *dev,
 	int which,
-	char *name,
+	char const *name,
 	size_t name_len,
 	size_t device_size
 );
 
 int new_device(
-	char *name,
+	char const *name,
 	size_t name_len,
 	size_t device_size
 );
@@ -330,13 +330,13 @@ static ssize_t show_createnewdevice_attr(
 
 static ssize_t store_createnewdevice_attr(
 	struct device_driver *driver,
-	char *buf,
+	char const *buf,
 	size_t count
 	)
 {
 	size_t i;
-	char *namestart;
-	char *sizestart;
+	char const *namestart;
+	char const *sizestart;
 	size_t namelen;
 	size_t sizelen;
 	size_t size;
@@ -538,7 +538,7 @@ static struct block_device_operations dcsc_ops = {
 static int setup_device(
 	struct dcsc_dev *dev,
 	int which,
-	char *name,
+	char const *name,
 	size_t name_len,
 	size_t device_size
 	)
@@ -624,16 +624,13 @@ static int setup_device(
 }
 
 int new_device(
-	char *name,
+	char const *name,
 	size_t name_len,
 	size_t device_size
 	)
 {
 	int res;
-	if (Devices.n_devices == Devices.cap_devices)
-		return -ENOMEM;
-
-	res = setup_device(Devices.Devices[Devices.n_devices],
+	res = setup_device(Devices.Devices + Devices.n_devices,
 	                   Devices.n_devices,
 	                   name,
 	                   name_len,
@@ -656,7 +653,6 @@ int new_device(
 
 static int __init dcsc_init(void)
 {
-	size_t i;
 	int res;
 
 	printk(KERN_NOTICE "dcsc: Initialize the module\xa");
