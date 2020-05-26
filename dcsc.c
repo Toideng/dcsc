@@ -21,20 +21,14 @@
 
 MODULE_LICENSE("Dual BSD/GPL");
 
+
+/* # of minor numbers per device */
 #define DCSC_MINORS 16
 #define MAXDEVICES 16
 #define KERNEL_SECTOR_SIZE 512
 
-#if 0
-#define MARKENTER(f) printk(KERN_DEBUG "dcsc: enter " #f "\xa");
-#define MARKLEAVE(f) printk(KERN_DEBUG "dcsc: leave " #f "\xa");
-#else
-#define MARKENTER(f)
-#define MARKLEAVE(f)
-#endif
-
-static int dcsc_major = 0; // allocate major number at runtime
-static int default_size = 128 * 1024 * 1024; // twelvety-eight MiB in bytes
+static int dcsc_major = 0; /* allocate major number at runtime */
+static int default_size = 128 * 1024 * 1024; /* twelvety-eight MiB in bytes */
 
 // Chooses between requiring user to create all devices or creating one default
 // device at startup
@@ -138,20 +132,31 @@ static int dcsc_xfer_bvec(
 	MARKENTER(dcsc_xfer_bvec);
 
 	if (bvec->bv_len % KERNEL_SECTOR_SIZE)
-		printk(KERN_WARNING "%s: "
+		printk(KERN_ALERT "%s: "
 		       "kernel has requested transfer of a non-integer # of sectors.\xa",
 		       dev->name);
 
-	if ((offset + len) > dev->size * KERNEL_SECTOR_SIZE) {
-		printk(KERN_WARNING "Beyond-end write (0x%016lx+0x%016lx)\n",
-		       offset, len);
-		return -EFAULT;
+	if (offset + len > dev->size * KERNEL_SECTOR_SIZE) {
+		if (data_dir == WRITE)
+			printk(KERN_WARNING "Beyond-end write (0x%016lx+0x%016lx)\xa",
+			       offset, len);
+		else
+			printk(KERN_WARNING "Beyond-end read (0x%016lx+0x%016lx)\xa",
+			       offset, len);
+		return -EIO;
 	}
 
-	if (data_dir == WRITE)
+	if (data_dir == WRITE) {
+		if (dev->access_mode) {
+			printk(KERN_ALERT "%s: "
+			       "Acces denied: write on read-only device\xa",
+			       dev->name);
+			return -EACCES;
+		}
 		memcpy(indsk, inmem, len);
-	else
+	} else {
 		memcpy(inmem, indsk, len);
+	}
 
 	kunmap_atomic(buffer);
 	MARKLEAVE(dcsc_xfer_bvec);
@@ -257,7 +262,7 @@ ssize_t show_size_attr(
 {
 	struct dcsc_dev *dev = container_of(plaindev, struct dcsc_dev, dev);
 	MARKENTER(show_size_attr);
-	return snprintf(buf, PAGE_SIZE, "%lu\xa", dev->size);
+	return snprintf(buf, PAGE_SIZE, "%lu\xa", dev->size / (1024 / KERNEL_SECTOR_SIZE));
 }
 
 ssize_t store_size_attr(
@@ -268,28 +273,45 @@ ssize_t store_size_attr(
 	)
 {
 	struct dcsc_dev *dev = container_of(plaindev, struct dcsc_dev, dev);
-	size_t size = 0;
+	size_t size;
+	size_t multiplier;
 	size_t i;
 
 	MARKENTER(store_size_attr);
 
-	for (i = 0;  i < count;  i++)
-	{
+	size = 1024;
+	multiplier = 0;
+	for (i = 0;  i < count;  i++) {
 		if (buf[i] == 0xa)
 			break;
+		if (buf[i] == 0x20)
+			continue;
+		if (buf[i] == 0x2a) {
+			size *= multiplier;
+			multiplier = 0;
+			continue;
+		}
 		if (buf[i] < '0' || buf[i] > '9')
 			return -EINVAL;
-		size *= 10;
-		size += buf[i] - '0';
-	}
 
-	if (size > dev->size_cap)
+		multiplier *= 10;
+		multiplier += buf[i] - '0';
+	}
+	size *= multiplier;
+
+	if (size == 0)
+		return -EINVAL;
+
+	printk(KERN_DEBUG "Requested size change to %08lx (max = %08lx)\xa",
+	       size, dev->size_cap * KERNEL_SECTOR_SIZE);
+
+	if (size > dev->size_cap * KERNEL_SECTOR_SIZE)
 		return -EINVAL;
 	if (size % KERNEL_SECTOR_SIZE)
 		return -EINVAL;
 	dev->size = size / KERNEL_SECTOR_SIZE;
 
-	return 0;
+	return count;
 }
 
 // 'Access' attribute allows user to change access mode for the device
@@ -320,8 +342,10 @@ ssize_t store_access_attr(
 	if (buf[0] != '0' && buf[0] != '1')
 		return -EINVAL;
 
+	printk(KERN_DEBUG "Requested access mode change to %d\xa", buf[0] - '0');
+
 	dev->access_mode = buf[0] - '0';
-	return 0;
+	return count;
 }
 
 // Registration of a device in sysfs for creating attributes
@@ -390,17 +414,25 @@ static ssize_t store_createnewdevice_attr(
 	size_t count
 	)
 {
+	int res;
 	size_t i;
 	char const *namestart;
-	char const *sizestart;
 	size_t namelen;
-	size_t sizelen;
 	size_t size;
 	size_t multiplier;
+
+	ssize_t ret_succ = count;
 
 	MARKENTER(store_createnewdevice_attr);
 
 	// check format for being "[[:alnum:]]+\x20[0-9*\x20]+"
+	for (i = 0;  i < count;  i++) {
+		if (buf[i] == 0xa) {
+			count = i;
+			break;
+		}
+	}
+
 	namestart = buf;
 	for (i = 0;  i < count;  i++) {
 		if (buf[i] == 0x20)
@@ -417,37 +449,29 @@ static ssize_t store_createnewdevice_attr(
 	if (i == count)
 		return -EINVAL;
 	namelen = i;
+	if (!namelen)
+		return -EINVAL;
 
 	i++;
-	sizestart = buf + i;
-	for (;  i < count;  i++) {
-		if (buf[i] == 0x20
-		 || buf[i] == 0x2a
-		 || (buf[i] >= '0' && buf[i] <= '9'))
-		{
-			continue;
-		}
-
-		return -EINVAL;
-	}
-	sizelen = (buf + i) - sizestart;
-
-	if (!namelen || !sizelen)
-		return -EINVAL;
-
 	size = 1024;
 	multiplier = 0;
-	for (i = 0;  i < sizelen;  i++) {
-		if (sizestart[i] == 0x20)
+	for (;  i < count;  i++) {
+		if (buf[i] == 0x20)
 			continue;
-		if (sizestart[i] == 0x2a) {
+		if (buf[i] == 0x2a) {
 			size *= multiplier;
 			multiplier = 0;
 			continue;
 		}
 
-		multiplier *= 10;
-		multiplier += sizestart[i] - '0';
+		if (buf[i] >= '0' && buf[i] <= '9')
+		{
+			multiplier *= 10;
+			multiplier += buf[i] - '0';
+			continue;
+		}
+
+		return -EINVAL;
 	}
 	size *= multiplier;
 
@@ -457,7 +481,11 @@ static ssize_t store_createnewdevice_attr(
 	// at this point, `size` has numerical size and
 	// `namestart[0..namelen-1]` has text name for the new device
 
-	return new_device(namestart, namelen, size);
+	res = new_device(namestart, namelen, size);
+	if (res)
+		return res;
+
+	return ret_succ;
 }
 
 
@@ -624,6 +652,8 @@ static int setup_device(
 
 	if (device_size % KERNEL_SECTOR_SIZE)
 		return -EINVAL;
+
+	/* convert `device_size` to sectors */
 	device_size /= KERNEL_SECTOR_SIZE;
 
 	if (name_len >= 32)
@@ -636,12 +666,13 @@ static int setup_device(
 	memset(dev, 0, sizeof *dev);
 	dev->size = device_size;
 	dev->size_cap = device_size;
+	dev->access_mode = 0;
 	dev->data = vmalloc(dev->size * KERNEL_SECTOR_SIZE);
 	if (!dev->data) {
 		printk(KERN_ALERT "vmalloc failure.\xa");
 		return -ENOMEM;
 	}
-	memset(dev->data, 0, dev->size);
+	memset(dev->data, 0, dev->size * KERNEL_SECTOR_SIZE);
 	dev->driver = &dcsc_driver;
 
 	spin_lock_init(&dev->lock);
@@ -687,9 +718,9 @@ static int setup_device(
 	if (res)
 	{
 		printk(KERN_ALERT "register_testbus_device failure\xa");
-		blk_cleanup_queue(dev->queue);
 		del_gendisk(dev->gd);
 		put_disk(dev->gd);
+		blk_cleanup_queue(dev->queue);
 		vfree(dev->data);
 		return res;
 	}
@@ -707,6 +738,9 @@ int new_device(
 {
 	int res;
 	MARKENTER(new_device);
+	if (Devices.n_devices >= Devices.cap_devices)
+		return -ENOMEM;
+
 	res = setup_device(Devices.Devices + Devices.n_devices,
 	                   Devices.n_devices,
 	                   name,
@@ -778,7 +812,7 @@ static int __init dcsc_init(void)
 	 * Allocate the device array, and initialize each one.
 	 */
 
-	printk(KERN_NOTICE "dcsc: Initialize the devices\xa");
+	printk(KERN_NOTICE "dcsc: Initialize the devices array\xa");
 	Devices.Devices = kmalloc(Devices.cap_devices * sizeof(struct dcsc_dev),
 	                          GFP_KERNEL);
 	if (!Devices.Devices)
@@ -792,6 +826,7 @@ static int __init dcsc_init(void)
 
 	if (!interactive_creation_allowed)
 	{
+		printk(KERN_NOTICE "dcsc: Initialize the default device\xa");
 		res = new_device("dcsca", 5, default_size);
 		if (res)
 		{

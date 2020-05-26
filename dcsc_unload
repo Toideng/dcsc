@@ -5,8 +5,13 @@ device="dcsc"
 # invoke rmmod with all arguments we got
 rmmod $module $* || exit 1
 
-# Remove stale nodes
-rm -f /dev/${device}a* /dev/${device}
+if [[ 0 == 0 ]]
+then
+	# Remove stale nodes
+	rm -f /dev/${device}a* /dev/${device}
+else
+	: something
+fi
 
 
 
