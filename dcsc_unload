@@ -1,16 +1,21 @@
 #!/bin/sh
-module="dcsc"
-device="dcsc"
 
-# invoke rmmod with all arguments we got
-rmmod $module $* || exit 1
-
-if [[ 0 == 0 ]]
+if [[ ! -e '/sys/bus/testbus' ]]
 then
-	# Remove stale nodes
-	rm -f /dev/${device}a* /dev/${device}
+	echo 'Module doesn''t seem to be loaded anyways'
+	exit 1
+fi
+
+if [[ -e '/sys/bus/testbus/drivers/dcsc_driver/createnewdevice' ]]
+then
+	echo 'Removing module with dynamic device creation'
+	# Module was loaded with dynamic device creation
+	rmmod dcsc || exit 1
 else
-	: something
+	echo 'Removing module without dynamic device creation'
+	# Module was loaded with "static" device creation and one
+	# default device
+	rmmod dcsc || exit 1
 fi
 
 

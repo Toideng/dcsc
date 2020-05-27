@@ -1,0 +1,38 @@
+#!/bin/sh
+
+if [[ ! -e '/sys/bus/testbus' ]]
+then
+	echo 'Module doesn''t seem to be loaded'
+	exit 1
+fi
+
+if [[ ! -e '/sys/bus/testbus/drivers/dcsc_driver/createnewdevice' ]]
+then
+	echo 'Module doesn''t seem to be loaded with dynamic device creation enabled'
+	exit 1
+fi
+
+if [[ $# != 2 ]]
+then
+	echo 'Usage: dcsc_add_device <name> <size in KiB>'
+	echo "Example usage: dcsc_add_device dcsca '128 * 1024'"
+	exit 1
+fi
+
+if ! expr match $1  '^[a-za-Z][a-zA-Z0-9]*$' &> /dev/null
+then
+	echo 'First argument: bad format'
+	echo 'Usage: dcsc_add_device <name> <size in KiB>'
+	echo "Example usage: dcsc_add_device dcsca '128 * 1024'"
+	exit 1
+fi
+
+if ! expr match $2  '^[ 0-9*]\+$' &> /dev/null
+then
+	echo 'Second argument: bad format'
+	echo 'Usage: dcsc_add_device <name> <size in KiB>'
+	echo "Example usage: dcsc_add_device dcsca '128 * 1024'"
+	exit 1
+fi
+
+echo -n "$1 $2" > /sys/bus/testbus/drivers/dcsc_driver/createnewdevice

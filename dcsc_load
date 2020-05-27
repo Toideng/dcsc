@@ -1,29 +1,31 @@
 #!/bin/bash
 
-module="dcsc"
-device="dcsc"
-mode="664"
-minors=16
-
-# invoke insmod with all arguments we got
-insmod ./$module.ko $* || exit 1
-
-if [[ 0 == 0 ]]
+if [[ $# -ne  1 ]]
 then
-	# Group: since distributions do it differently, look for wheel or use staff
-	if grep '^staff:' /etc/group > /dev/null; then
-		group="staff"
-	else
-		group="wheel"
-	fi
-	major=`cat /proc/devices | awk "\\$2==\"$module\" {print \\$1}"`
+	echo "Usage: dcsc_load (interactive|fixed)"
+	exit 1
+fi
+if [[ ($1 != "interactive") && ($1 != "fixed") ]]
+then
+	echo "dcsc_load: Unrecognized parameter \"$1\""
+	echo "Usage: dcsc_load (interactive|fixed)"
+	exit 1
+fi
 
-	# Remove stale nodes and replace them, then give gid and perms
 
-	rm -f /dev/${device}a* /dev/${device}
 
-	mknod /dev/${device}a b $major 0
-	ln -sf ${device}a /dev/${device}
-	chgrp $group /dev/${device}a*
-	chmod $mode  /dev/${device}a*
+if [[ $1 == "interactive" ]]
+then
+	# Load module and allow for interactive device creation
+	insmod ./dcsc.ko interactive_creation_allowed=1 || exit 1
+
+	exit 0
+fi
+
+if [[ $1 == "fixed" ]]
+then
+	# Load module with only one default device
+	insmod ./dcsc.ko interactive_creation_allowed=0 || exit 1
+
+	exit 0
 fi

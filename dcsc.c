@@ -142,10 +142,10 @@ static int dcsc_xfer_bvec(
 
 	if (offset + len > dev->size * KERNEL_SECTOR_SIZE) {
 		if (data_dir == WRITE)
-			printk(KERN_WARNING "Beyond-end write (0x%016lx+0x%016lx)\xa",
+			printk(KERN_WARNING "Beyond-end write (0x%16lx+0x%16lx)\xa",
 			       offset, len);
 		else
-			printk(KERN_WARNING "Beyond-end read (0x%016lx+0x%016lx)\xa",
+			printk(KERN_WARNING "Beyond-end read (0x%16lx+0x%16lx)\xa",
 			       offset, len);
 		return -EIO;
 	}
@@ -252,6 +252,7 @@ ssize_t show_size_attr(
 	)
 {
 	struct dcsc_dev *dev = container_of(plaindev, struct dcsc_dev, dev);
+	printk(KERN_ALERT "Requested size change show\xa");
 	return snprintf(buf, PAGE_SIZE, "%lu\xa", dev->size / (1024 / KERNEL_SECTOR_SIZE));
 }
 
@@ -266,6 +267,8 @@ ssize_t store_size_attr(
 	size_t size;
 	size_t multiplier;
 	size_t i;
+
+	printk(KERN_NOTICE "Requested size change store\xa");
 
 	size = 1024;
 	multiplier = 0;
@@ -287,10 +290,14 @@ ssize_t store_size_attr(
 	}
 	size *= multiplier;
 
+	printk(KERN_NOTICE "Parsed new size\xa");
+
 	if (size == 0)
 		return -EINVAL;
 
-	printk(KERN_DEBUG "Requested size change to %08lx (max = %08lx)\xa",
+	printk(KERN_NOTICE "new size non-zero\xa");
+
+	printk(KERN_NOTICE "Requested size change to %08lx (max = %08lx)\xa",
 	       size, dev->size_cap * KERNEL_SECTOR_SIZE);
 
 	if (size > dev->size_cap * KERNEL_SECTOR_SIZE)
@@ -298,6 +305,8 @@ ssize_t store_size_attr(
 	if (size % KERNEL_SECTOR_SIZE)
 		return -EINVAL;
 	dev->size = size / KERNEL_SECTOR_SIZE;
+
+	printk(KERN_NOTICE "new size success\xa");
 
 	return count;
 }
@@ -328,7 +337,7 @@ ssize_t store_access_attr(
 	if (buf[0] != '0' && buf[0] != '1')
 		return -EINVAL;
 
-	printk(KERN_DEBUG "Requested access mode change to %d\xa", buf[0] - '0');
+	printk(KERN_NOTICE "Requested access mode change to %d\xa", buf[0] - '0');
 
 	dev->access_mode = buf[0] - '0';
 	return count;
@@ -362,7 +371,7 @@ int register_testbus_device(
 	if (res)
 		return res;
 
-	memset(&dev->size_attr, 0, sizeof dev->size_attr);
+	memset(&dev->access_attr, 0, sizeof dev->access_attr);
 	dev->access_attr.attr.name = "access";
 	dev->access_attr.attr.mode = S_IRUGO | S_IWUGO;
 	dev->access_attr.show = show_access_attr;
@@ -660,7 +669,8 @@ static int setup_device(
 	dev->gd->queue = dev->queue;
 	dev->gd->private_data = dev;
 
-	snprintf(dev->gd->disk_name, ((32 < name_len) ? 32 : name_len), "%s", name);
+	snprintf(dev->gd->disk_name, ((32 < (name_len + 1)) ? 32 : (name_len + 1)),
+	         "%s", name);
 	dev->name = dev->gd->disk_name;
 
 	set_capacity(dev->gd, device_size);
