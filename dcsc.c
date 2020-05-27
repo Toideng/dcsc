@@ -342,7 +342,7 @@ int register_testbus_device(
 {
 	int res;
 
-	memset(dev->dev, 0, sizeof dev->dev);
+	memset(&dev->dev, 0, sizeof dev->dev);
 	dev->dev.bus = &testbus_type;
 	dev->dev.parent = &testbus;
 	dev->dev.release = testbus_dev_release;
@@ -352,7 +352,7 @@ int register_testbus_device(
 	if (res)
 		return res;
 
-	memset(dev->size_attr, 0, sizeof dev->size_attr);
+	memset(&dev->size_attr, 0, sizeof dev->size_attr);
 	dev->size_attr.attr.name = "size";
 	dev->size_attr.attr.mode = S_IRUGO | S_IWUGO;
 	dev->size_attr.show = show_size_attr;
@@ -362,7 +362,7 @@ int register_testbus_device(
 	if (res)
 		return res;
 
-	memset(dev->size_attr, 0, sizeof dev->size_attr);
+	memset(&dev->size_attr, 0, sizeof dev->size_attr);
 	dev->access_attr.attr.name = "access";
 	dev->access_attr.attr.mode = S_IRUGO | S_IWUGO;
 	dev->access_attr.show = show_access_attr;
